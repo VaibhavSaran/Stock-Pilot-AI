@@ -1,7 +1,4 @@
-version: '3.8'
-
 services:
-
   # PostgreSQL - Stock financial data
   postgres:
     image: postgres:15
@@ -45,24 +42,21 @@ services:
 
   # ChromaDB - Vector store for news embeddings
   chromadb:
-    image: chromadb/chroma:latest
+    image: chromadb/chroma:1.5.3
     container_name: stockpilot_chromadb
     ports:
       - "8001:8000"
     volumes:
-      - chroma_data:/chroma/chroma
-    environment:
-      - IS_PERSISTENT=TRUE
-      - ANONYMIZED_TELEMETRY=FALSE
+      - chroma_data:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v2/heartbeat"]
       interval: 10s
       timeout: 5s
       retries: 5
     networks:
       - stockpilot_network
 
-  # Apache Airflow - Init DB
+  # Apache Airflow - Init DB + Create Admin User
   airflow-init:
     image: apache/airflow:2.9.1
     container_name: stockpilot_airflow_init
@@ -71,7 +65,15 @@ services:
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    command: db init
+      _AIRFLOW_DB_MIGRATE: 'true'
+      _AIRFLOW_WWW_USER_CREATE: 'true'
+      _AIRFLOW_WWW_USER_USERNAME: admin
+      _AIRFLOW_WWW_USER_PASSWORD: admin
+      _AIRFLOW_WWW_USER_FIRSTNAME: StockPilot
+      _AIRFLOW_WWW_USER_LASTNAME: Admin
+      _AIRFLOW_WWW_USER_EMAIL: admin@stockpilot.com
+      _AIRFLOW_WWW_USER_ROLE: Admin
+    command: version
     depends_on:
       postgres:
         condition: service_healthy
@@ -127,41 +129,43 @@ services:
       - stockpilot_network
 
   # FastAPI - Backend
-  api:
-    build:
-      context: .
-      dockerfile: api/Dockerfile
-    container_name: stockpilot_api
-    restart: always
-    env_file:
-      - .env
-    ports:
-      - "8000:8000"
-    depends_on:
-      postgres:
-        condition: service_healthy
-      mongodb:
-        condition: service_healthy
-      chromadb:
-        condition: service_healthy
-    networks:
-      - stockpilot_network
+  # TODO: Uncomment in Phase 5 once api/Dockerfile is created
+  # api:
+  #   build:
+  #     context: .
+  #     dockerfile: api/Dockerfile
+  #   container_name: stockpilot_api
+  #   restart: always
+  #   env_file:
+  #     - .env
+  #   ports:
+  #     - "8000:8000"
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #     mongodb:
+  #       condition: service_healthy
+  #     chromadb:
+  #       condition: service_healthy
+  #   networks:
+  #     - stockpilot_network
 
   # Streamlit - Frontend
-  frontend:
-    build:
-      context: .
-      dockerfile: frontend/Dockerfile
-    container_name: stockpilot_frontend
-    restart: always
-    env_file:
-      - .env
-    ports:
-      - "8501:8501"
-    depends_on:
-      - api
-    networks:
-      - stockpilot_network
+  # TODO: Uncomment in Phase 6 once frontend/Dockerfile is created
+  # frontend:
+  #   build:
+  #     context: .
+  #     dockerfile: frontend/Dockerfile
+  #   container_name: stockpilot_frontend
+  #   restart: always
+  #   env_file:
+  #     - .env
+  #   ports:
+  #     - "8501:8501"
+  #   depends_on:
+  #     - api
+  #   networks:
+  #     - stockpilot_network
 
 # Volumes
 volumes:
