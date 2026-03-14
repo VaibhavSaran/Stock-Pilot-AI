@@ -20,6 +20,7 @@ services:
     networks:
       - stockpilot_network
 
+
   # MongoDB - News articles
   mongodb:
     image: mongo:7.0
@@ -40,6 +41,7 @@ services:
     networks:
       - stockpilot_network
 
+
   # ChromaDB - Vector store for news embeddings
   chromadb:
     image: chromadb/chroma:1.5.3
@@ -56,15 +58,58 @@ services:
     networks:
       - stockpilot_network
 
-  # Apache Airflow - Init DB + Create Admin User
-  airflow-init:
+
+  # Airflow shared config (YAML anchor)
+  # Project code mounted at /opt/airflow/project so DAGs can
+  # import scraper.* and config.* via PYTHONPATH.
+  # Hosts use Docker service names (postgres/mongodb/chromadb),
+  # NOT localhost - containers communicate over internal network.
+
+  x-airflow-common: &airflow-common
     image: apache/airflow:2.9.1
-    container_name: stockpilot_airflow_init
-    environment:
+    environment: &airflow-common-env
       AIRFLOW__CORE__EXECUTOR: LocalExecutor
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+      PYTHONPATH: /opt/airflow/project
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      MONGO_HOST: mongodb
+      MONGO_PORT: "27017"
+      MONGO_DB: ${MONGO_DB}
+      MONGO_USER: ${MONGO_USER}
+      MONGO_PASSWORD: ${MONGO_PASSWORD}
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: "8000"
+      CHROMA_COLLECTION_NAME: ${CHROMA_COLLECTION_NAME}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GEMINI_API_KEY: ${GEMINI_API_KEY}
+      NEWS_API_KEY: ${NEWS_API_KEY}
+      TAVILY_API_KEY: ${TAVILY_API_KEY}
+      LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY}
+      LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2}
+      LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT}
+      # Packages required by DAG task functions
+      _PIP_ADDITIONAL_REQUIREMENTS: "yfinance>=1.0.0 pymongo==4.7.2 newsapi-python==0.2.7 beautifulsoup4==4.12.3 requests==2.31.0 langchain-google-genai==2.1.2 langchain-anthropic==0.3.10 chromadb==1.5.3 python-dotenv==1.0.0"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags
+      - airflow_logs:/opt/airflow/logs
+      - .:/opt/airflow/project
+    networks:
+      - stockpilot_network
+
+
+  # Apache Airflow - Init DB + Create Admin User
+  airflow-init:
+    <<: *airflow-common
+    container_name: stockpilot_airflow_init
+    environment:
+      <<: *airflow-common-env
       _AIRFLOW_DB_MIGRATE: 'true'
       _AIRFLOW_WWW_USER_CREATE: 'true'
       _AIRFLOW_WWW_USER_USERNAME: admin
@@ -77,23 +122,13 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
-    networks:
-      - stockpilot_network
+
 
   # Apache Airflow - Webserver
   airflow-webserver:
-    image: apache/airflow:2.9.1
+    <<: *airflow-common
     container_name: stockpilot_airflow_webserver
     restart: always
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
-      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
-      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-      AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
-    volumes:
-      - ./airflow/dags:/opt/airflow/dags
-      - airflow_logs:/opt/airflow/logs
     ports:
       - "8080:8080"
     command: webserver
@@ -105,39 +140,27 @@ services:
       interval: 30s
       timeout: 10s
       retries: 5
-    networks:
-      - stockpilot_network
+
 
   # Apache Airflow - Scheduler
   airflow-scheduler:
-    image: apache/airflow:2.9.1
+    <<: *airflow-common
     container_name: stockpilot_airflow_scheduler
     restart: always
-    environment:
-      AIRFLOW__CORE__EXECUTOR: LocalExecutor
-      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://${POSTGRES_USER}:${POSTGRES_PASSWORD}@postgres:5432/airflow
-      AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
-      AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
-    volumes:
-      - ./airflow/dags:/opt/airflow/dags
-      - airflow_logs:/opt/airflow/logs
     command: scheduler
     depends_on:
       - airflow-init
       - postgres
-    networks:
-      - stockpilot_network
 
-  # FastAPI - Backend
-  # TODO: Uncomment in Phase 5 once api/Dockerfile is created
+
+  # FastAPI - Backend (Phase 5)
   # api:
   #   build:
   #     context: .
   #     dockerfile: api/Dockerfile
   #   container_name: stockpilot_api
   #   restart: always
-  #   env_file:
-  #     - .env
+  #   env_file: .env
   #   ports:
   #     - "8000:8000"
   #   depends_on:
@@ -150,16 +173,15 @@ services:
   #   networks:
   #     - stockpilot_network
 
-  # Streamlit - Frontend
-  # TODO: Uncomment in Phase 6 once frontend/Dockerfile is created
+
+  # Streamlit - Frontend (Phase 6)
   # frontend:
   #   build:
   #     context: .
   #     dockerfile: frontend/Dockerfile
   #   container_name: stockpilot_frontend
   #   restart: always
-  #   env_file:
-  #     - .env
+  #   env_file: .env
   #   ports:
   #     - "8501:8501"
   #   depends_on:
@@ -167,14 +189,12 @@ services:
   #   networks:
   #     - stockpilot_network
 
-# Volumes
 volumes:
   postgres_data:
   mongo_data:
   chroma_data:
   airflow_logs:
 
-# Networks
 networks:
   stockpilot_network:
     driver: bridge

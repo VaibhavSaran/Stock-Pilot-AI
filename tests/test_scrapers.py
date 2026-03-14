@@ -1,5 +1,4 @@
 """
-test_scrapers.py
 Unit tests for stock_scraper and news_scraper.
 
 Uses unittest.mock throughout — no live DB or API calls.
@@ -140,9 +139,7 @@ class TestRunStockScraper:
         assert "AAPL" in summary
         assert "error" in summary["AAPL"]
 
-
 # News scraper tests
-
 class TestBuildDocument:
     """Tests for scraper.news_scraper.build_document"""
 
