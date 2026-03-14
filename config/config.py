@@ -2,6 +2,9 @@
 Centralized configuration management for StockPilot AI.
 Loads all environment variables with validation.
 """
+# Must be first as it patches pydantic-settings before chromadb is imported
+import pydantic_settings
+pydantic_settings.BaseSettings.model_config["extra"] = "ignore"
 
 import os
 from dotenv import load_dotenv
