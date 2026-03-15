@@ -66,6 +66,7 @@ services:
       AIRFLOW__CORE__FERNET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
       AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
       AIRFLOW__WEBSERVER__SECRET_KEY: ${AIRFLOW__CORE__FERNET_KEY}
+      AIRFLOW__WEBSERVER__BASE_URL: "http://3.209.133.64/airflow"
       PYTHONPATH: /opt/airflow/project
       POSTGRES_HOST: postgres
       POSTGRES_PORT: "5432"
