@@ -17,5 +17,5 @@ jobs:
           script: |
             cd ~/Stock-Pilot-AI
             git pull origin main
-            docker compose up -d --build --no-deps api frontend
+            docker compose up -d --build --force-recreate api frontend
             echo "Deployment completed"
