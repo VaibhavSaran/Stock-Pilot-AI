@@ -20,7 +20,6 @@ services:
     networks:
       - stockpilot_network
 
-
   # MongoDB - News articles
   mongodb:
     image: mongo:7.0
@@ -41,7 +40,6 @@ services:
     networks:
       - stockpilot_network
 
-
   # ChromaDB - Vector store for news embeddings
   chromadb:
     image: chromadb/chroma:1.5.3
@@ -51,7 +49,7 @@ services:
     volumes:
       - chroma_data:/data
     healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v2/heartbeat"]
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/localhost/8000 && echo -e 'GET /api/v2/heartbeat HTTP/1.0\r\n\r\n' >&3 && cat <&3 | grep -q '200'"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -60,11 +58,6 @@ services:
 
 
   # Airflow shared config (YAML anchor)
-  # Project code mounted at /opt/airflow/project so DAGs can
-  # import scraper.* and config.* via PYTHONPATH.
-  # Hosts use Docker service names (postgres/mongodb/chromadb),
-  # NOT localhost - containers communicate over internal network.
-
   x-airflow-common: &airflow-common
     image: apache/airflow:2.9.1
     environment: &airflow-common-env
@@ -94,15 +87,12 @@ services:
       LANGCHAIN_API_KEY: ${LANGCHAIN_API_KEY}
       LANGCHAIN_TRACING_V2: ${LANGCHAIN_TRACING_V2}
       LANGCHAIN_PROJECT: ${LANGCHAIN_PROJECT}
-      # Packages required by DAG task functions
-      _PIP_ADDITIONAL_REQUIREMENTS: "yfinance>=1.0.0 pymongo==4.7.2 newsapi-python==0.2.7 beautifulsoup4==4.12.3 requests==2.31.0 langchain-google-genai==2.1.2 langchain-anthropic==0.3.10 chromadb==1.5.3 python-dotenv==1.0.0"
     volumes:
       - ./airflow/dags:/opt/airflow/dags
       - airflow_logs:/opt/airflow/logs
       - .:/opt/airflow/project
     networks:
       - stockpilot_network
-
 
   # Apache Airflow - Init DB + Create Admin User
   airflow-init:
@@ -123,7 +113,6 @@ services:
       postgres:
         condition: service_healthy
 
-
   # Apache Airflow - Webserver
   airflow-webserver:
     <<: *airflow-common
@@ -141,7 +130,6 @@ services:
       timeout: 10s
       retries: 5
 
-
   # Apache Airflow - Scheduler
   airflow-scheduler:
     <<: *airflow-common
@@ -152,42 +140,48 @@ services:
       - airflow-init
       - postgres
 
+  # FastAPI - Backend
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    container_name: stockpilot_api
+    restart: always
+    env_file: .env
+    environment:
+      POSTGRES_HOST: postgres
+      MONGO_HOST: mongodb
+      CHROMA_HOST: chromadb
+      CHROMA_PORT: "8000"
+      API_HOST: "0.0.0.0"
+      API_PORT: "8000"
+    ports:
+      - "8000:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mongodb:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    networks:
+      - stockpilot_network
 
-  # FastAPI - Backend (Phase 5)
-  # api:
-  #   build:
-  #     context: .
-  #     dockerfile: api/Dockerfile
-  #   container_name: stockpilot_api
-  #   restart: always
-  #   env_file: .env
-  #   ports:
-  #     - "8000:8000"
-  #   depends_on:
-  #     postgres:
-  #       condition: service_healthy
-  #     mongodb:
-  #       condition: service_healthy
-  #     chromadb:
-  #       condition: service_healthy
-  #   networks:
-  #     - stockpilot_network
-
-
-  # Streamlit - Frontend (Phase 6)
-  # frontend:
-  #   build:
-  #     context: .
-  #     dockerfile: frontend/Dockerfile
-  #   container_name: stockpilot_frontend
-  #   restart: always
-  #   env_file: .env
-  #   ports:
-  #     - "8501:8501"
-  #   depends_on:
-  #     - api
-  #   networks:
-  #     - stockpilot_network
+  # Streamlit - Frontend
+  frontend:
+    build:
+      context: .
+      dockerfile: frontend/Dockerfile
+    container_name: stockpilot_frontend
+    restart: always
+    environment:
+      API_BASE_URL: "http://api:8000"
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api
+    networks:
+      - stockpilot_network
 
 volumes:
   postgres_data:

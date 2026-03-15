@@ -1,4 +1,6 @@
 """
+StockPilot AI — Streamlit Frontend
+
 Run with:
     streamlit run frontend/app.py
 
@@ -13,7 +15,8 @@ from datetime import datetime
 
 
 # Config
-API_BASE = "http://localhost:8000"
+import os
+API_BASE = os.getenv("API_BASE_URL", "http://localhost:8000")
 TICKERS  = ["AAPL", "MSFT", "GOOGL", "AMZN", "TSLA", "NVDA", "META"]
 
 st.set_page_config(
@@ -52,7 +55,6 @@ def api_get(path: str, params: dict = None):
         st.error(f"API error: {e}")
         return None
 
-
 def api_post(path: str, payload: dict):
     try:
         r = requests.post(f"{API_BASE}{path}", json=payload, timeout=60)
@@ -64,7 +66,6 @@ def api_post(path: str, payload: dict):
     except Exception as e:
         st.error(f"API error: {e}")
         return None
-
 
 def render_assistant_message(msg: dict):
     """
@@ -105,8 +106,6 @@ def render_assistant_message(msg: dict):
     if meta_parts:
         st.caption(" · ".join(meta_parts))
 
-
-
 # Sidebar
 with st.sidebar:
     st.title("📈 StockPilot AI")
@@ -121,8 +120,6 @@ with st.sidebar:
 
     st.divider()
     st.caption("Powered by Claude · Gemini · LangGraph")
-
-
 
 # Page: Chat
 if page == "💬 Chat":
