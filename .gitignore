@@ -126,3 +126,7 @@ dmypy.json
 # Ignoring custom venv and environment files
 .env
 stockEnv/
+
+# Ignoring Extra files
+stockpilot-key.pem
+temp.txt

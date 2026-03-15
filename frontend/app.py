@@ -114,7 +114,7 @@ with st.sidebar:
 
     page = st.radio(
         "Navigation",
-        ["💬 Chat", "📊 Stock Data", "🔧 System Status"],
+        ["💬 Chat With StockPilot AI", "📊 Stock Data Analysis", "🔧 System and Database Status"],
         label_visibility="collapsed",
     )
 
@@ -122,7 +122,7 @@ with st.sidebar:
     st.caption("Powered by Claude · Gemini · LangGraph")
 
 # Page: Chat
-if page == "💬 Chat":
+if page == "💬 Chat With StockPilot AI":
     st.header("Chat")
     st.caption("Ask anything about stocks, news, or markets.")
 
@@ -164,7 +164,7 @@ if page == "💬 Chat":
             st.rerun()
 
 # Page: Stock Data
-elif page == "📊 Stock Data":
+elif page == "📊 Stock Data Analysis":
     st.header("Stock Data")
 
     col1, col2 = st.columns([2, 1])
@@ -235,7 +235,7 @@ elif page == "📊 Stock Data":
         st.info(f"No price data for {ticker}. Run the stock scraper first.")
 
 # Page: System Status
-elif page == "🔧 System Status":
+elif page == "🔧 System and Database Status":
     st.header("System Status")
 
     if st.button("Refresh", type="secondary"):
