@@ -23,6 +23,7 @@ class ChatResponse(BaseModel):
     ticker:       Optional[str] = None
     sql_query:    Optional[str] = None   # populated for stock_data_rag route
     sources_used: int = 0                # number of docs/results used
+    sources:      list[dict] = []
     error:        Optional[str] = None
 
 

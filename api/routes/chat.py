@@ -35,6 +35,8 @@ async def chat(request: ChatRequest):
 
         # Count sources used depending on route
         route = result.get("route")
+
+        # Count sources
         if route == "news_rag":
             sources_used = len(result.get("retrieved_docs", [])) + len(
                 result.get("web_search_results", [])
@@ -44,11 +46,27 @@ async def chat(request: ChatRequest):
         else:
             sources_used = 0
 
-        elapsed = round(time.time() - start, 2)
-        logger.info(
-            f"[chat] Completed in {elapsed}s | route={route} | "
-            f"ticker={result.get('ticker')} | sources={sources_used}"
-        )
+        # Build sources list
+        sources = []
+        if route == "news_rag":
+            for doc in result.get("retrieved_docs", []):
+                meta = doc.get("metadata", {})
+                url = meta.get("url", "")
+                if url:
+                    sources.append({
+                        "title": meta.get("source", "News article"),
+                        "url":   url,
+                    })
+            for doc in result.get("web_search_results", []):
+                meta = doc.get("metadata", {})
+                # Tavily stores URL in "source" key
+                url   = meta.get("source", "")
+                title = meta.get("title", "Web source")
+                if url:
+                    sources.append({
+                        "title": title,
+                        "url":   url,
+                    })
 
         return ChatResponse(
             query=request.query,
@@ -57,6 +75,7 @@ async def chat(request: ChatRequest):
             ticker=result.get("ticker"),
             sql_query=result.get("sql_query"),
             sources_used=sources_used,
+            sources=sources,
             error=result.get("error"),
         )
 
