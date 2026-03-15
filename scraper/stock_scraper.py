@@ -108,7 +108,6 @@ def scrape_prices(ticker: str, start: date, end: date) -> list[dict]:
             end=end.isoformat(),
             auto_adjust=True,       # adjusts for splits/dividends
             progress=False,
-            multi_level_index=False,  # flatten MultiIndex — yfinance 1.x
         )
     except Exception as exc:
         logger.error(f"yfinance download failed for {ticker}: {exc}")
