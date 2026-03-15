@@ -66,11 +66,11 @@ StockPilot AI is a full-stack agentic RAG application that lets you query stock 
 │              LANGGRAPH — SUPERVISOR AGENT                    │
 │         Claude claude-sonnet-4-6 · Gemini embeddings         │
 │                                                              │
-│  ┌────────────────┐ ┌────────────────┐ ┌────────────────┐   │
-│  │  News RAG      │ │ Stock Data RAG │ │ Stock Charts   │   │
-│  │  ChromaDB +    │ │ NL → SQL →     │ │ RAG            │   │
-│  │  Web Search    │ │ PostgreSQL     │ │ SQL → Charts   │   │
-│  └────────────────┘ └────────────────┘ └────────────────┘   │
+│  ┌────────────────┐ ┌────────────────┐ ┌────────────────┐    │
+│  │  News RAG      │ │ Stock Data RAG │ │ Stock Charts   │    │
+│  │  ChromaDB +    │ │ NL → SQL →     │ │ RAG            │    │
+│  │  Web Search    │ │ PostgreSQL     │ │ SQL → Charts   │    │
+│  └────────────────┘ └────────────────┘ └────────────────┘    │
 └──────────────────────────────┬───────────────────────────────┘
                                ↓
                     ┌─────────────────────┐
@@ -84,9 +84,9 @@ StockPilot AI is a full-stack agentic RAG application that lets you query stock 
                     └─────────────────────┘
                                ↓
               ┌─────────────────────────────────┐
-              │  AWS EC2 (c7i-flex.large)        │
-              │  Nginx · Docker Compose          │
-              │  GitHub Actions CI/CD            │
+              │  AWS EC2 (c7i-flex.large)       │
+              │  Nginx · Docker Compose         │
+              │  GitHub Actions CI/CD           │
               └─────────────────────────────────┘
 ```
 
