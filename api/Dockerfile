@@ -1,11 +1,17 @@
 # StockPilot AI — FastAPI Backend
 FROM python:3.10-slim
 
-# Install system dependencies needed by psycopg2 + curl for healthcheck
+# Install system dependencies
+# - gcc, libpq-dev: required by psycopg2
+# - curl: healthcheck
+# - build-essential, libpython3-dev: required by Prophet (compiles PyStan)
+# - python3-dev: header files for Prophet's C extensions
 RUN apt-get update && apt-get install -y --no-install-recommends \
     gcc \
     libpq-dev \
     curl \
+    build-essential \
+    python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

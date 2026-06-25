@@ -6,7 +6,9 @@ from datetime import date, datetime
 from typing import Optional
 from pydantic import BaseModel, Field
 
-# Chat
+
+#Chat 
+
 class ChatRequest(BaseModel):
     query: str = Field(
         ...,
@@ -22,12 +24,13 @@ class ChatResponse(BaseModel):
     route:        Optional[str] = None   # news_rag | stock_data_rag | general
     ticker:       Optional[str] = None
     sql_query:    Optional[str] = None   # populated for stock_data_rag route
-    sources_used: int = 0                # number of docs/results used
+    sources_used: int = 0
     sources:      list[dict] = []
     error:        Optional[str] = None
 
 
-# Stock prices
+#Stock prices 
+
 class StockPrice(BaseModel):
     ticker:     str
     price_date: date
@@ -43,7 +46,9 @@ class StockPricesResponse(BaseModel):
     count:  int
     prices: list[StockPrice]
 
-# Stock metadata
+
+#Stock metadata 
+
 class StockMetadata(BaseModel):
     ticker:       str
     company_name: Optional[str] = None
@@ -52,16 +57,34 @@ class StockMetadata(BaseModel):
     market_cap:   Optional[int] = None
     updated_at:   Optional[datetime] = None
 
-# Tickers list
+
+#Tickers 
+
 class TickersResponse(BaseModel):
     tickers: list[str]
     count:   int
 
-# Health
+
+#Forecast 
+class ForecastPoint(BaseModel):
+    date:      str    # ISO date string e.g. "2026-06-15"
+    predicted: float  # Prophet yhat
+    lower:     float  # yhat_lower (80% confidence interval)
+    upper:     float  # yhat_upper (80% confidence interval)
+
+class ForecastResponse(BaseModel):
+    ticker:            str
+    forecast_days:     int
+    training_points:   int    # number of historical data points used
+    last_known_date:   str    # last date in training data
+    last_known_price:  float  # last closing price (anchor point)
+    forecast:          list[ForecastPoint]
+
+
+#Health
 class ServiceStatus(BaseModel):
     status:  str   # "ok" | "error"
     message: str
-
 
 class HealthResponse(BaseModel):
     status:   str   # "ok" | "degraded" | "error"
