@@ -11,7 +11,6 @@ import requests
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime
 
 
 # Config
@@ -42,7 +41,9 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
+
 # API helper functions
+
 def api_get(path: str, params: dict = None):
     try:
         r = requests.get(f"{API_BASE}{path}", params=params, timeout=30)
@@ -67,6 +68,7 @@ def api_post(path: str, payload: dict):
         st.error(f"API error: {e}")
         return None
 
+
 def render_assistant_message(msg: dict):
     """
     Render a single assistant message from history.
@@ -83,10 +85,7 @@ def render_assistant_message(msg: dict):
 
     st.markdown(msg["content"])
 
-    if msg.get("sql_query"):
-        with st.expander("SQL Query"):
-            st.code(msg["sql_query"], language="sql")
-
+    # Task 2: Sources shown as hyperlinks only — SQL query hidden from users
     sources = msg.get("sources", [])
     if sources:
         with st.expander(f"Sources ({len(sources)})"):
@@ -106,25 +105,33 @@ def render_assistant_message(msg: dict):
     if meta_parts:
         st.caption(" · ".join(meta_parts))
 
+
 # Sidebar
 with st.sidebar:
     st.title("📈 StockPilot AI")
     st.caption("AI-powered stock market analysis")
     st.divider()
 
+    # Task 4: Removed "System and Database Status" page from navigation
     page = st.radio(
         "Navigation",
-        ["💬 Chat With StockPilot AI", "📊 Stock Data Analysis", "🔧 System and Database Status"],
+        ["💬 Chat With StockPilot AI", "📊 Stock Data Analysis"],
         label_visibility="collapsed",
     )
 
     st.divider()
     st.caption("Powered by Claude · Gemini · LangGraph")
 
-# Page: Chat
+
+# Page: Chat 
 if page == "💬 Chat With StockPilot AI":
     st.header("Chat")
-    st.caption("Ask anything about stocks, news, or markets.")
+
+    # Task 3: Updated subtitle with ticker specialization
+    st.caption(
+        "Powered by Claude Sonnet 4.6 · Specialized in "
+        "AAPL, MSFT, GOOGL, AMZN, TSLA, NVDA, META"
+    )
 
     if "messages" not in st.session_state:
         st.session_state.messages = []
@@ -138,7 +145,7 @@ if page == "💬 Chat With StockPilot AI":
                 st.markdown(msg["content"])
 
     # New query input
-    if query := st.chat_input("Ask about a stock, news, or market..."):
+    if query := st.chat_input("Ask about AAPL, MSFT, GOOGL, AMZN, TSLA, NVDA, or META..."):
         st.session_state.messages.append({"role": "user", "content": query})
 
         with st.spinner("Thinking..."):
@@ -150,12 +157,9 @@ if page == "💬 Chat With StockPilot AI":
                 "content":      result.get("answer", "No answer returned."),
                 "route":        result.get("route"),
                 "ticker":       result.get("ticker"),
-                "sql_query":    result.get("sql_query"),
                 "sources":      result.get("sources", []),
                 "sources_used": result.get("sources_used", 0),
             })
-            # Rerun so the new message renders from the history loop
-            # where expanders work correctly
             st.rerun()
 
     if st.session_state.messages:
@@ -163,7 +167,9 @@ if page == "💬 Chat With StockPilot AI":
             st.session_state.messages = []
             st.rerun()
 
+
 # Page: Stock Data
+
 elif page == "📊 Stock Data Analysis":
     st.header("Stock Data")
 
@@ -188,10 +194,17 @@ elif page == "📊 Stock Data Analysis":
             c1.metric("Company", meta.get("company_name", ticker))
             c2.metric("Sector", meta.get("sector", "—"))
             cap = meta.get("market_cap")
-            c3.metric("Market Cap", f"${cap/1e12:.2f}T" if cap and cap >= 1e12 else (f"${cap/1e9:.1f}B" if cap else "—"))
+            c3.metric(
+                "Market Cap",
+                f"${cap/1e12:.2f}T" if cap and cap >= 1e12
+                else (f"${cap/1e9:.1f}B" if cap else "—")
+            )
             latest = df.iloc[-1]
             prev   = df.iloc[-2] if len(df) > 1 else None
-            change = ((latest["close"] - prev["close"]) / prev["close"] * 100) if prev is not None else 0
+            change = (
+                (latest["close"] - prev["close"]) / prev["close"] * 100
+                if prev is not None else 0
+            )
             c4.metric("Latest Close", f"${latest['close']:.2f}", f"{change:+.2f}%")
 
         st.divider()
@@ -233,33 +246,3 @@ elif page == "📊 Stock Data Analysis":
 
     elif data and data.get("count") == 0:
         st.info(f"No price data for {ticker}. Run the stock scraper first.")
-
-# Page: System Status
-elif page == "🔧 System and Database Status":
-    st.header("System Status")
-
-    if st.button("Refresh", type="secondary"):
-        st.rerun()
-
-    data = api_get("/health/services")
-
-    if data:
-        if data.get("status") == "ok":
-            st.success("All systems operational")
-        else:
-            st.warning("One or more services degraded")
-
-        st.divider()
-
-        for name, info in data.get("services", {}).items():
-            col1, col2 = st.columns([1, 4])
-            with col1:
-                if info["status"] == "ok":
-                    st.success(name.upper())
-                else:
-                    st.error(name.upper())
-            with col2:
-                st.caption(info["message"])
-
-        st.divider()
-        st.caption(f"Version: {data.get('version', '—')}  ·  Checked: {datetime.now().strftime('%H:%M:%S')}")
