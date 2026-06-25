@@ -12,6 +12,12 @@ Embedding model: Gemini models/gemini-embedding-001
   - GA release, top MTEB leaderboard
   - Accessed via langchain_google_genai.GoogleGenerativeAIEmbeddings
 
+Hybrid search: BM25 (FTS) + vector similarity, merged via Reciprocal Rank Fusion
+  - Vector search: semantic similarity via Gemini embeddings
+  - BM25 search:   keyword/exact-term matching via ChromaDB v2 built-in FTS
+  - RRF:           merges both ranked lists without needing score normalisation
+  - Best of both worlds: catches exact ticker mentions AND semantic context
+
 ChromaDB pydantic-settings fix
 ChromaDB's Settings class uses pydantic-settings with env_file=".env" but
 no extra="ignore", so it rejects all our app-level env vars as "extra inputs"
@@ -35,20 +41,91 @@ from config.config import ChromaConfig, LLMConfig
 
 logger = logging.getLogger(__name__)
 
+# Reciprocal Rank Fusion constant — 60 is the standard default
+RRF_K = 60
+
+
+def _reciprocal_rank_fusion(
+    vector_hits: list[dict],
+    bm25_hits:   list[dict],
+    k:           int = 5,
+) -> list[dict]:
+    """
+    Merge two ranked result lists using Reciprocal Rank Fusion.
+
+    RRF score = 1/(RRF_K + rank_in_vector_results)
+              + 1/(RRF_K + rank_in_bm25_results)
+
+    Documents that appear in both lists get a combined score boost.
+    Documents that appear in only one list still get a partial score.
+
+    Args:
+        vector_hits : Results from vector similarity search (ordered by relevance)
+        bm25_hits   : Results from BM25 full-text search (ordered by relevance)
+        k           : Number of final results to return
+
+    Returns:
+        Merged list of result dicts, sorted by RRF score descending.
+        Each dict has: id, document, metadata, rrf_score,
+                       vector_rank (None if not in vector results),
+                       bm25_rank   (None if not in BM25 results)
+    """
+    scores: dict[str, dict] = {}
+
+    # Score from vector results
+    for rank, hit in enumerate(vector_hits):
+        doc_id = hit["id"]
+        if doc_id not in scores:
+            scores[doc_id] = {
+                "id":           doc_id,
+                "document":     hit["document"],
+                "metadata":     hit["metadata"],
+                "rrf_score":    0.0,
+                "vector_rank":  None,
+                "bm25_rank":    None,
+            }
+        scores[doc_id]["rrf_score"]   += 1.0 / (RRF_K + rank + 1)
+        scores[doc_id]["vector_rank"]  = rank + 1
+
+    # Score from BM25 results
+    for rank, hit in enumerate(bm25_hits):
+        doc_id = hit["id"]
+        if doc_id not in scores:
+            scores[doc_id] = {
+                "id":           doc_id,
+                "document":     hit["document"],
+                "metadata":     hit["metadata"],
+                "rrf_score":    0.0,
+                "vector_rank":  None,
+                "bm25_rank":    None,
+            }
+        scores[doc_id]["rrf_score"] += 1.0 / (RRF_K + rank + 1)
+        scores[doc_id]["bm25_rank"]  = rank + 1
+
+    # Sort by RRF score descending and return top-k
+    ranked = sorted(scores.values(), key=lambda x: x["rrf_score"], reverse=True)
+    return ranked[:k]
+
 
 class ChromaVectorStore:
     """
     Native ChromaDB HTTP client wrapper with Gemini embeddings.
+    Supports both pure vector search and hybrid BM25 + vector search.
 
-    Usage
-    store = ChromaVectorStore()
-    results = store.similarity_search("Apple earnings", ticker="AAPL", k=5)
+    Usage:
+        store = ChromaVectorStore()
+
+        # Hybrid search (recommended) — BM25 + vector via RRF
+        results = store.hybrid_search("Apple earnings beat", ticker="AAPL", k=5)
+
+        # Pure vector search (legacy)
+        results = store.similarity_search("Apple earnings", ticker="AAPL", k=5)
     """
 
     def __init__(self):
-        self._client: Optional[chromadb.HttpClient] = None
-        self._collection = None
-        self._embedder: Optional[GoogleGenerativeAIEmbeddings] = None
+        self._client:   Optional[chromadb.HttpClient]            = None
+        self._collection                                          = None
+        self._embedder: Optional[GoogleGenerativeAIEmbeddings]   = None
 
     def _get_client(self) -> chromadb.HttpClient:
         """Lazy-init ChromaDB HTTP client."""
@@ -58,8 +135,6 @@ class ChromaVectorStore:
                 port=ChromaConfig.PORT,
                 settings=Settings(
                     anonymized_telemetry=False,
-                    # Prevent pydantic-settings from reading our .env file
-                    # and rejecting our app-level env vars as "extra inputs"
                     chroma_client_auth_provider=None,
                 ),
             )
@@ -84,30 +159,124 @@ class ChromaVectorStore:
             )
         return self._embedder
 
-    def similarity_search(
+    # Hybrid search (BM25 + vector via RRF) 
+
+    def hybrid_search(
         self,
-        query: str,
+        query:  str,
         ticker: Optional[str] = None,
-        k: int = 5,
+        k:      int = 5,
+        fetch_k_multiplier: int = 3,
     ) -> list[dict]:
         """
-        Embed the query and retrieve the top-k most similar documents.
+        Hybrid search: combines BM25 full-text search and vector similarity
+        search via Reciprocal Rank Fusion (RRF).
 
-        Parameters:
-        query  : Natural language search string
-        ticker : Optional ticker filter (e.g. "AAPL") — uses ChromaDB
-                 metadata filtering, NOT post-filter
-        k      : Number of results to return
+        Fetches fetch_k_multiplier * k candidates from each search method,
+        then merges and re-ranks to return the top k results.
+
+        Args:
+            query               : Natural language search string
+            ticker              : Optional ticker filter (e.g. "AAPL")
+            k                   : Number of final results to return
+            fetch_k_multiplier  : How many extra candidates to fetch per method
+                                  before RRF merging (default: 3x)
 
         Returns:
-        List of dicts with keys: id, document, metadata, distance
+            List of dicts with keys: id, document, metadata,
+                                     rrf_score, vector_rank, bm25_rank
         """
+        fetch_k = k * fetch_k_multiplier
+        where   = {"ticker": ticker} if ticker else None
+
+        # Vector search
+        vector_hits: list[dict] = []
         try:
             embedder    = self._get_embedder()
             collection  = self._get_collection()
 
             query_embedding = embedder.embed_query(query)
+            vector_results  = collection.query(
+                query_embeddings=[query_embedding],
+                n_results=fetch_k,
+                where=where,
+                include=["documents", "metadatas", "distances"],
+            )
 
+            if vector_results and vector_results.get("ids") and vector_results["ids"][0]:
+                for i, doc_id in enumerate(vector_results["ids"][0]):
+                    vector_hits.append({
+                        "id":       doc_id,
+                        "document": vector_results["documents"][0][i],
+                        "metadata": vector_results["metadatas"][0][i],
+                        "distance": vector_results["distances"][0][i],
+                    })
+
+            logger.info(f"Vector search: '{query[:50]}' → {len(vector_hits)} hits")
+
+        except Exception as exc:
+            logger.error(f"Vector search failed: {exc}")
+
+        # BM25 full-text search
+        bm25_hits: list[dict] = []
+        try:
+            collection = self._get_collection()
+
+            # ChromaDB v2 full-text search via where_document $contains
+            # The #document field has fts_index enabled in our collection schema
+            bm25_results = collection.query(
+                query_texts=[query],
+                n_results=fetch_k,
+                where=where,
+                include=["documents", "metadatas"],
+            )
+
+            if bm25_results and bm25_results.get("ids") and bm25_results["ids"][0]:
+                for i, doc_id in enumerate(bm25_results["ids"][0]):
+                    bm25_hits.append({
+                        "id":       doc_id,
+                        "document": bm25_results["documents"][0][i],
+                        "metadata": bm25_results["metadatas"][0][i],
+                    })
+
+            logger.info(f"BM25 search:   '{query[:50]}' → {len(bm25_hits)} hits")
+
+        except Exception as exc:
+            logger.error(f"BM25 search failed: {exc}")
+
+        # Reciprocal Rank Fusion
+        if not vector_hits and not bm25_hits:
+            logger.warning("Both vector and BM25 search returned no results")
+            return []
+
+        merged = _reciprocal_rank_fusion(vector_hits, bm25_hits, k=k)
+
+        logger.info(
+            f"Hybrid search: '{query[:50]}' ticker={ticker} → "
+            f"{len(merged)} docs (vector={len(vector_hits)}, bm25={len(bm25_hits)})"
+        )
+        return merged
+
+    # Pure vector search (kept for backwards compatibility)
+
+    def similarity_search(
+        self,
+        query:  str,
+        ticker: Optional[str] = None,
+        k:      int = 5,
+    ) -> list[dict]:
+        """
+        Pure vector similarity search via Gemini embeddings.
+        Kept for backwards compatibility — prefer hybrid_search() for new code.
+
+        Returns:
+            List of dicts with keys: id, document, metadata, distance
+        """
+        try:
+            embedder   = self._get_embedder()
+            collection = self._get_collection()
+
+            query_embedding = embedder.embed_query(query)
             where = {"ticker": ticker} if ticker else None
 
             results = collection.query(
@@ -128,13 +297,15 @@ class ChromaVectorStore:
                     })
 
             logger.info(
-                f"ChromaDB search: '{query[:50]}' ticker={ticker} → {len(docs)} docs"
+                f"Vector search: '{query[:50]}' ticker={ticker} → {len(docs)} docs"
             )
             return docs
 
         except Exception as exc:
             logger.error(f"ChromaDB similarity_search failed: {exc}")
             return []
+
+    # Utility
 
     def count(self) -> int:
         """Return total document count in the collection."""
@@ -153,8 +324,10 @@ class ChromaVectorStore:
             return False
 
 
-# Module-level singleton — reuse across graph nodes
+# Module-level singleton
+
 _store_instance: Optional[ChromaVectorStore] = None
+
 
 def get_vector_store() -> ChromaVectorStore:
     """Return the module-level ChromaVectorStore singleton."""

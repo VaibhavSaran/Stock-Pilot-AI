@@ -45,20 +45,26 @@ def _get_llm() -> ChatAnthropic:
 # Node: retrieve_news
 def retrieve_news(state: AgentState) -> dict:
     """
-    Retrieve top-k news articles from ChromaDB.
+    Retrieve top-k news articles from ChromaDB using hybrid search.
+    Combines BM25 full-text search and vector similarity via Reciprocal
+    Rank Fusion — catches both exact keyword matches (ticker symbols,
+    company names, figures) and semantic context.
     Filters by ticker if one was extracted by the supervisor.
     """
     query  = state["query"]
     ticker = state.get("ticker")
-
+ 
     store = get_vector_store()
-    docs  = store.similarity_search(query, ticker=ticker, k=6)
-
-    logger.info(f"[news_rag] Retrieved {len(docs)} docs for query='{query[:50]}'")
-
+    docs  = store.hybrid_search(query, ticker=ticker, k=6)
+ 
+    logger.info(
+        f"[news_rag] Hybrid search retrieved {len(docs)} docs "
+        f"for query='{query[:50]}' ticker={ticker}"
+    )
+ 
     return {
         "retrieved_docs": docs,
-        "messages": [f"[retrieve_news] Found {len(docs)} candidate documents"],
+        "messages": [f"[retrieve_news] Found {len(docs)} candidate documents via hybrid search"],
     }
 
 # Node: grade_docs

@@ -29,6 +29,7 @@ Usage:
 import argparse
 import hashlib
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
@@ -50,9 +51,10 @@ logger = logging.getLogger(__name__)
 
 
 # Constants
-NEWSAPI_BASE_URL = "https://newsapi.org/v2/everything"
-REQUEST_TIMEOUT  = 10       # seconds per HTTP request
-MAX_FULL_TEXT_CHARS = 5000  # truncate scraped body to avoid huge docs
+NEWSAPI_BASE_URL    = "https://newsapi.org/v2/everything"
+REQUEST_TIMEOUT     = 10       # seconds per HTTP request
+MAX_FULL_TEXT_CHARS = 5000     # truncate scraped body to avoid huge docs
+MIN_SUMMARY_LENGTH  = 50       # minimum characters for a valid summary
 HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -61,8 +63,53 @@ HEADERS = {
     )
 }
 
+# URL patterns that indicate non-article garbage pages
+BLOCKED_URL_PATTERNS = re.compile(
+    r"consent\.|cookie|/subscribe|/login|/signup|/register|"
+    r"removed\.com|javascript:|mailto:",
+    re.IGNORECASE,
+)
 
-# MongoDB helpers
+
+# Data quality filter
+
+def is_valid_article(doc: dict, seen_headlines: set) -> tuple[bool, str]:
+    """
+    Validate a built document before MongoDB insertion.
+    Returns (is_valid, reason_if_rejected).
+
+    Rules:
+    1. URL must not match blocked patterns (consent pages, cookie walls, etc.)
+    2. Headline must be present and non-empty
+    3. Summary must be at least MIN_SUMMARY_LENGTH characters
+    4. Headline must not be a duplicate within this scrape batch
+    """
+    url      = doc.get("url", "")
+    headline = (doc.get("headline") or "").strip()
+    summary  = (doc.get("summary") or "").strip()
+
+    # Rule 1 — blocked URL patterns
+    if BLOCKED_URL_PATTERNS.search(url):
+        return False, f"blocked URL pattern: {url[:80]}"
+
+    # Rule 2 — headline required
+    if not headline:
+        return False, "missing headline"
+
+    # Rule 3 — summary too short
+    if len(summary) < MIN_SUMMARY_LENGTH:
+        return False, f"summary too short ({len(summary)} chars): '{summary[:60]}'"
+
+    # Rule 4 — duplicate headline within this batch
+    headline_lower = headline.lower()
+    if headline_lower in seen_headlines:
+        return False, f"duplicate headline: '{headline[:60]}'"
+
+    return True, ""
+
+
+# MongoDB helpers 
+
 def get_mongo_collection():
     """Return the articles collection from MongoDB."""
     url = (
@@ -70,8 +117,8 @@ def get_mongo_collection():
         f"@{MongoConfig.HOST}:{MongoConfig.PORT}/{MongoConfig.DB}"
         "?authSource=admin"
     )
-    client = MongoClient(url, serverSelectionTimeoutMS=5000)
-    db     = client[MongoConfig.DB]
+    client     = MongoClient(url, serverSelectionTimeoutMS=5000)
+    db         = client[MongoConfig.DB]
     collection = db["articles"]
 
     # Ensure indexes (idempotent)
@@ -110,8 +157,8 @@ def bulk_upsert(collection, docs: list[dict]) -> dict:
     }
 
 
-
 # NewsAPI fetch
+
 def fetch_newsapi_articles(ticker: str, from_date: datetime, to_date: datetime) -> list[dict]:
     """
     Query NewsAPI for articles mentioning the ticker.
@@ -150,8 +197,8 @@ def fetch_newsapi_articles(ticker: str, from_date: datetime, to_date: datetime) 
         return []
 
 
-
 # Full-text extraction (best-effort)
+
 def extract_full_text(url: str) -> Optional[str]:
     """
     Attempt to scrape and extract the article body from a URL.
@@ -183,8 +230,8 @@ def extract_full_text(url: str) -> Optional[str]:
         return None
 
 
-
 # Document builder
+
 def build_document(ticker: str, raw: dict) -> Optional[dict]:
     """
     Convert a raw NewsAPI article dict into a MongoDB document.
@@ -218,8 +265,8 @@ def build_document(ticker: str, raw: dict) -> Optional[dict]:
     }
 
 
-
 # Orchestrator
+
 def run_scraper(
     tickers: Optional[list[str]] = None,
     days: int = 3,
@@ -236,8 +283,8 @@ def run_scraper(
     Returns:
         Summary dict with counts per ticker.
     """
-    tickers  = tickers or TRACKED_TICKERS
-    to_date  = datetime.now(timezone.utc)
+    tickers   = tickers or TRACKED_TICKERS
+    to_date   = datetime.now(timezone.utc)
     from_date = to_date - timedelta(days=days)
 
     logger.info(
@@ -257,14 +304,29 @@ def run_scraper(
     for ticker in tickers:
         ticker = ticker.upper()
         logger.info(f"Processing {ticker}...")
+
         try:
             raw_articles = fetch_newsapi_articles(ticker, from_date, to_date)
 
-            docs = []
+            docs          = []
+            seen_headlines = set()   # batch-level duplicate tracker
+            rejected      = 0
+
             for raw in raw_articles:
                 doc = build_document(ticker, raw)
                 if doc is None:
+                    rejected += 1
                     continue
+
+                # Data quality filter — block garbage before MongoDB
+                valid, reason = is_valid_article(doc, seen_headlines)
+                if not valid:
+                    logger.debug(f"  Rejected [{ticker}]: {reason}")
+                    rejected += 1
+                    continue
+
+                # Track headline to catch duplicates in this batch
+                seen_headlines.add((doc.get("headline") or "").strip().lower())
 
                 # Enrich with full text (best-effort, don't let it fail the doc)
                 if enrich_full_text and doc["url"]:
@@ -275,14 +337,15 @@ def run_scraper(
             counts = bulk_upsert(collection, docs)
             summary[ticker] = {
                 "fetched":  len(raw_articles),
+                "rejected": rejected,
                 "docs":     len(docs),
                 "upserted": counts["upserted"],
                 "matched":  counts["matched"],
             }
             logger.info(
                 f"✓ {ticker}: {len(raw_articles)} fetched, "
-                f"{len(docs)} valid, {counts['upserted']} upserted, "
-                f"{counts['matched']} updated"
+                f"{rejected} rejected, {len(docs)} valid, "
+                f"{counts['upserted']} upserted, {counts['matched']} updated"
             )
 
         except Exception as exc:
@@ -292,7 +355,9 @@ def run_scraper(
     logger.info(f"News scraper complete. Summary: {summary}")
     return summary
 
-# CLI entry point
+
+# CLI entry point 
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="StockPilot news scraper")
     parser.add_argument(
