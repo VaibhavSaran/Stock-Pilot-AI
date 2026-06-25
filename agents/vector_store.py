@@ -18,6 +18,12 @@ Hybrid search: BM25 (FTS) + vector similarity, merged via Reciprocal Rank Fusion
   - RRF:           merges both ranked lists without needing score normalisation
   - Best of both worlds: catches exact ticker mentions AND semantic context
 
+BM25 implementation note:
+  ChromaDB v2 FTS is triggered via where_document={"$contains": query}.
+  Do NOT use query_texts=[query] — that triggers ChromaDB's internal embedder
+  (384-dim sentence-transformers) which conflicts with our Gemini embeddings
+  (3072-dim) and causes a dimension mismatch error.
+
 ChromaDB pydantic-settings fix
 ChromaDB's Settings class uses pydantic-settings with env_file=".env" but
 no extra="ignore", so it rejects all our app-level env vars as "extra inputs"
@@ -107,6 +113,38 @@ def _reciprocal_rank_fusion(
     return ranked[:k]
 
 
+def _extract_bm25_keywords(query: str) -> list[str]:
+    """
+    Extract meaningful keywords from a query for BM25 FTS.
+
+    ChromaDB's $contains operator does exact substring matching on the
+    document text. We run multiple single-keyword searches and merge results
+    to approximate BM25 behaviour across the query terms.
+
+    Filters out common stop words to focus on meaningful terms.
+    """
+    STOP_WORDS = {
+        "a", "an", "the", "and", "or", "but", "in", "on", "at", "to",
+        "for", "of", "with", "by", "from", "is", "was", "are", "were",
+        "be", "been", "being", "have", "has", "had", "do", "does", "did",
+        "will", "would", "could", "should", "may", "might", "what", "how",
+        "why", "when", "where", "who", "which", "that", "this", "these",
+        "those", "about", "after", "before", "during", "it", "its",
+        "any", "some", "all", "not", "no", "can", "there",
+    }
+    words = query.lower().split()
+    keywords = [w.strip(".,?!:;\"'()[]") for w in words]
+    keywords = [w for w in keywords if w and w not in STOP_WORDS and len(w) > 2]
+    # Deduplicate while preserving order
+    seen = set()
+    unique = []
+    for kw in keywords:
+        if kw not in seen:
+            seen.add(kw)
+            unique.append(kw)
+    return unique
+
+
 class ChromaVectorStore:
     """
     Native ChromaDB HTTP client wrapper with Gemini embeddings.
@@ -159,7 +197,7 @@ class ChromaVectorStore:
             )
         return self._embedder
 
-    # Hybrid search (BM25 + vector via RRF) 
+    #Hybrid search (BM25 + vector via RRF) 
 
     def hybrid_search(
         self,
@@ -175,6 +213,10 @@ class ChromaVectorStore:
         Fetches fetch_k_multiplier * k candidates from each search method,
         then merges and re-ranks to return the top k results.
 
+        BM25 uses ChromaDB v2's where_document $contains operator for FTS —
+        runs per keyword and merges hits, avoiding the embedding dimension
+        mismatch that occurs with query_texts=[query].
+
         Args:
             query               : Natural language search string
             ticker              : Optional ticker filter (e.g. "AAPL")
@@ -189,7 +231,7 @@ class ChromaVectorStore:
         fetch_k = k * fetch_k_multiplier
         where   = {"ticker": ticker} if ticker else None
 
-        # Vector search
+        #Vector search 
         vector_hits: list[dict] = []
         try:
             embedder    = self._get_embedder()
@@ -217,34 +259,58 @@ class ChromaVectorStore:
         except Exception as exc:
             logger.error(f"Vector search failed: {exc}")
 
-        # BM25 full-text search
+        #BM25 full-text search via $contains 
+        # ChromaDB v2 FTS: use where_document={"$contains": keyword}
+        # Run per keyword and deduplicate results to approximate BM25 ranking.
         bm25_hits: list[dict] = []
         try:
             collection = self._get_collection()
+            keywords   = _extract_bm25_keywords(query)
 
-            # ChromaDB v2 full-text search via where_document $contains
-            # The #document field has fts_index enabled in our collection schema
-            bm25_results = collection.query(
-                query_texts=[query],
-                n_results=fetch_k,
-                where=where,
-                include=["documents", "metadatas"],
-            )
+            seen_ids: set[str] = set()
 
-            if bm25_results and bm25_results.get("ids") and bm25_results["ids"][0]:
-                for i, doc_id in enumerate(bm25_results["ids"][0]):
-                    bm25_hits.append({
-                        "id":       doc_id,
-                        "document": bm25_results["documents"][0][i],
-                        "metadata": bm25_results["metadatas"][0][i],
-                    })
+            for keyword in keywords[:5]:  # cap at 5 keywords to limit API calls
+                try:
+                    where_doc = {"$contains": keyword}
+
+                    # Combine ticker filter with document filter if needed
+                    if where:
+                        fts_results = collection.get(
+                            where=where,
+                            where_document=where_doc,
+                            include=["documents", "metadatas"],
+                            limit=fetch_k,
+                        )
+                    else:
+                        fts_results = collection.get(
+                            where_document=where_doc,
+                            include=["documents", "metadatas"],
+                            limit=fetch_k,
+                        )
+
+                    ids  = fts_results.get("ids", [])
+                    docs = fts_results.get("documents", [])
+                    metas = fts_results.get("metadatas", [])
+
+                    for i, doc_id in enumerate(ids):
+                        if doc_id not in seen_ids:
+                            seen_ids.add(doc_id)
+                            bm25_hits.append({
+                                "id":       doc_id,
+                                "document": docs[i] if i < len(docs) else "",
+                                "metadata": metas[i] if i < len(metas) else {},
+                            })
+
+                except Exception as kw_exc:
+                    logger.debug(f"BM25 keyword '{keyword}' failed: {kw_exc}")
+                    continue
 
             logger.info(f"BM25 search:   '{query[:50]}' → {len(bm25_hits)} hits")
 
         except Exception as exc:
             logger.error(f"BM25 search failed: {exc}")
 
-        # Reciprocal Rank Fusion
+        #Reciprocal Rank Fusion 
         if not vector_hits and not bm25_hits:
             logger.warning("Both vector and BM25 search returned no results")
             return []
@@ -257,7 +323,7 @@ class ChromaVectorStore:
         )
         return merged
 
-    # Pure vector search (kept for backwards compatibility)
+    #Pure vector search (kept for backwards compatibility) 
 
     def similarity_search(
         self,
@@ -305,7 +371,7 @@ class ChromaVectorStore:
             logger.error(f"ChromaDB similarity_search failed: {exc}")
             return []
 
-    # Utility
+    #Utility 
 
     def count(self) -> int:
         """Return total document count in the collection."""
@@ -324,7 +390,7 @@ class ChromaVectorStore:
             return False
 
 
-# Module-level singleton
+#Module-level singleton 
 
 _store_instance: Optional[ChromaVectorStore] = None
 
