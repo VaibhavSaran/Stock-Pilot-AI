@@ -115,13 +115,8 @@ def _reciprocal_rank_fusion(
 
 def _extract_bm25_keywords(query: str) -> list[str]:
     """
-    Extract meaningful keywords from a query for BM25 FTS.
-
-    ChromaDB's $contains operator does exact substring matching on the
-    document text. We run multiple single-keyword searches and merge results
-    to approximate BM25 behaviour across the query terms.
-
-    Filters out common stop words to focus on meaningful terms.
+    Extract search terms for BM25 FTS.
+    Strategy: use the full query first, then 2-3 most distinctive words.
     """
     STOP_WORDS = {
         "a", "an", "the", "and", "or", "but", "in", "on", "at", "to",
@@ -132,17 +127,17 @@ def _extract_bm25_keywords(query: str) -> list[str]:
         "those", "about", "after", "before", "during", "it", "its",
         "any", "some", "all", "not", "no", "can", "there",
     }
+    # Start with full query as a phrase search
+    terms = [query]
+
+    # Add top 2 most distinctive words (longest non-stopwords)
     words = query.lower().split()
     keywords = [w.strip(".,?!:;\"'()[]") for w in words]
-    keywords = [w for w in keywords if w and w not in STOP_WORDS and len(w) > 2]
-    # Deduplicate while preserving order
-    seen = set()
-    unique = []
-    for kw in keywords:
-        if kw not in seen:
-            seen.add(kw)
-            unique.append(kw)
-    return unique
+    keywords = [w for w in keywords if w and w not in STOP_WORDS and len(w) > 3]
+    keywords = sorted(keywords, key=len, reverse=True)[:2]
+    terms.extend(keywords)
+
+    return terms
 
 
 class ChromaVectorStore:
@@ -269,7 +264,7 @@ class ChromaVectorStore:
 
             seen_ids: set[str] = set()
 
-            for keyword in keywords[:5]:  # cap at 5 keywords to limit API calls
+            for keyword in keywords[:3]:  # cap at 3 keywords to limit API calls
                 try:
                     where_doc = {"$contains": keyword}
 
