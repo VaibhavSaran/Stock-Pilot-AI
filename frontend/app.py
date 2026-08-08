@@ -119,7 +119,7 @@ def render_assistant_message(msg: dict):
     elif route == "general":
         st.markdown('<span class="route-badge badge-general">GENERAL</span>', unsafe_allow_html=True)
 
-    st.markdown(msg["content"])
+    st.markdown(msg["content"].replace("$", "\\$"))
 
     # Sources shown as hyperlinks only — SQL query hidden from users
     sources = msg.get("sources", [])
