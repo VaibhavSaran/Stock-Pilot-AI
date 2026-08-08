@@ -178,6 +178,7 @@ services:
     restart: always
     environment:
       API_BASE_URL: "http://api:8000"
+      PYTHONFAULTHANDLER: "1"
     ports:
       - "8501:8501"
     depends_on:
