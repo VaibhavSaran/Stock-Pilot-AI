@@ -56,7 +56,7 @@ class MongoConfig:
         "MONGO_URL",
         f"mongodb://{os.getenv('MONGO_USER')}:{os.getenv('MONGO_PASSWORD')}"
         f"@{os.getenv('MONGO_HOST', 'localhost')}:{os.getenv('MONGO_PORT', 27017)}"
-        f"/{os.getenv('MONGO_DB', 'stockpilot_news')}",
+        f"/{os.getenv('MONGO_DB', 'stockpilot_news')}?authSource=admin",
     )
 
 
