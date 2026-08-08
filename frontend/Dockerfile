@@ -13,7 +13,8 @@ RUN pip install --no-cache-dir \
     streamlit==1.35.0 \
     requests==2.31.0 \
     pandas==2.2.2 \
-    plotly==5.22.0
+    plotly==5.22.0\
+    pyarrow==23.0.1
 
 COPY frontend/ ./frontend/
 
