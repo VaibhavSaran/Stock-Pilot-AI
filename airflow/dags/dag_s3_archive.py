@@ -81,7 +81,7 @@ def archive_postgres_prices(**context) -> dict:
     dry_run = _is_dry_run()
     cutoff  = _cutoff_date()
 
-    engine = create_engine(PostgresConfig.URL, pool_pre_ping=True)
+    engine = create_engine(PostgresConfig.URL, pool_pre_ping=True, future=True)
     s3     = boto3.client("s3")
 
     summary: dict[str, dict] = {}
