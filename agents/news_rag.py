@@ -16,8 +16,10 @@ After grading: if enough relevant docs -> generate directly
 """
 
 import logging
+from datetime import datetime, timezone
 from typing import Literal
 
+from dateutil import parser as date_parser
 from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 from langgraph.graph import END, StateGraph
@@ -138,6 +140,7 @@ def web_search(state: AgentState) -> dict:
                 "metadata": {
                     "source": r.get("url", ""),
                     "title":  r.get("title", ""),
+                    "published_date": r.get("published_date", ""),
                 },
             }
             for r in results.get("results", [])
@@ -155,6 +158,31 @@ def web_search(state: AgentState) -> dict:
             "web_search_results": [],
             "messages": [f"[web_search] Failed: {exc}"],
         }
+
+_MIN_DATETIME = datetime.min.replace(tzinfo=timezone.utc)
+
+
+def _doc_datetime(doc: dict) -> datetime:
+    """
+    Parse a doc's date for sorting/display.
+    ChromaDB docs carry "published_at" (ISO string), web docs carry
+    "published_date" (Fix 1). Missing/unparseable dates sort as oldest
+    rather than erroring.
+    """
+    metadata = doc.get("metadata", {})
+    raw = metadata.get("published_at") or metadata.get("published_date")
+
+    if not raw:
+        return _MIN_DATETIME
+
+    try:
+        parsed = date_parser.parse(raw)
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        return parsed
+    except (ValueError, OverflowError, TypeError):
+        return _MIN_DATETIME
+
 
 # Node: generate_news_answer
 def generate_news_answer(state: AgentState) -> dict:
@@ -179,18 +207,26 @@ def generate_news_answer(state: AgentState) -> dict:
             "messages": ["[generate_news_answer] No context available — fallback answer"],
         }
 
+    # Most recent sources first, so the LLM sees freshest context
+    all_docs.sort(key=_doc_datetime, reverse=True)
+
     # Build context string
     context_parts = []
     for i, doc in enumerate(all_docs[:6], 1):
         source = doc.get("metadata", {}).get("source", "")
         text   = doc.get("document", "")[:600]
-        context_parts.append(f"[Source {i}] {source}\n{text}")
+        doc_dt = _doc_datetime(doc)
+        date_str = doc_dt.strftime("%Y-%m-%d") if doc_dt != _MIN_DATETIME else "date unknown"
+        context_parts.append(f"[Source {i}, {date_str}] {source}\n{text}")
 
     context = "\n\n".join(context_parts)
 
     system = """You are StockPilot AI, a financial analysis assistant.
 Answer the user's question using ONLY the provided news context.
 Be concise, factual, and cite source numbers where relevant.
+Prioritize the most recent sources when sources conflict or span different
+time periods, and explicitly note in the answer if available sources are
+from significantly different dates rather than blending them silently.
 If the context doesn't fully answer the question, say so clearly."""
 
     human = f"""Question: {query}
