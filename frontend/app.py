@@ -35,6 +35,25 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+#Disclaimer gate
+
+if "disclaimer_accepted" not in st.session_state:
+    st.session_state.disclaimer_accepted = False
+
+if not st.session_state.disclaimer_accepted:
+    st.warning(
+        "StockPilot AI is a personal/educational project. It does not provide "
+        "financial or investment advice. Data and AI-generated analysis may be "
+        "inaccurate, delayed, or incomplete. Any financial decisions you make "
+        "based on this tool are your own responsibility — the developer and any "
+        "underlying service providers accept no liability for outcomes."
+    )
+    agreed = st.checkbox("I understand and agree")
+    if st.button("Continue", disabled=not agreed):
+        st.session_state.disclaimer_accepted = True
+        st.rerun()
+    st.stop()
+
 st.markdown("""
 <style>
     .route-badge {
@@ -381,3 +400,9 @@ elif page == "📊 Stock Data Analysis":
 
             elif forecast_data:
                 st.error(forecast_data.get("detail", "Forecast failed. Not enough data."))
+
+
+#Footer
+
+st.divider()
+st.caption("Not financial advice.")

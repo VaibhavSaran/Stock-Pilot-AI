@@ -15,6 +15,8 @@ Schema context injected into the SQL generation prompt:
 """
 
 import logging
+import re
+from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
 from langchain_anthropic import ChatAnthropic
@@ -27,6 +29,14 @@ from agents.state import AgentState
 from config.config import LLMConfig, PostgresConfig
 
 logger = logging.getLogger(__name__)
+
+# 90-day retention boundary — must match RETENTION_DAYS in
+# airflow/dags/dag_s3_archive.py. Price rows older than this are no longer
+# in Postgres; they live in S3 as Parquet (see S3_ARCHIVE_BUCKET below).
+RETENTION_DAYS    = 90
+S3_ARCHIVE_BUCKET = "stockpilot-ai-archive-vergil2026"
+
+_DATE_LITERAL_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 # DB engine — lazy init
@@ -141,14 +151,78 @@ RULES:
             "error":     str(exc),
         }
 
+def _extract_date_bounds(sql: str) -> tuple[date | None, date | None]:
+    """
+    Pull the literal YYYY-MM-DD date bounds referenced in a SQL query's
+    price_date filters, if any (e.g. "price_date >= '2025-01-01'").
+
+    Returns (None, None) when the query has no literal date bounds — this
+    covers relative filters like "CURRENT_DATE - INTERVAL '7 days'", which
+    by construction can never reach past the retention window and are left
+    on the normal Postgres path.
+    """
+    literals = _DATE_LITERAL_RE.findall(sql)
+    if not literals:
+        return None, None
+    parsed = [datetime.strptime(d, "%Y-%m-%d").date() for d in literals]
+    return min(parsed), max(parsed)
+
+
+def _build_duckdb_sql(sql: str, ticker: str | None) -> str:
+    """Rewrite a stock_prices query to read from the S3 Parquet archive instead."""
+    glob = (
+        f"s3://{S3_ARCHIVE_BUCKET}/prices/{ticker}/*.parquet"
+        if ticker
+        else f"s3://{S3_ARCHIVE_BUCKET}/prices/*/*.parquet"
+    )
+    return re.sub(
+        r"\bstock_prices\b",
+        f"read_parquet('{glob}', union_by_name=true)",
+        sql,
+        flags=re.IGNORECASE,
+    )
+
+
+def _query_duckdb_s3(sql: str) -> list[dict[str, Any]]:
+    """
+    Run a query against the S3 Parquet price archive via DuckDB's httpfs +
+    aws extensions. Uses the credential_chain provider so it picks up the
+    EC2 instance's IAM role automatically — no access keys are configured
+    here or anywhere else in this codebase.
+    """
+    import duckdb
+
+    con = duckdb.connect()
+    con.execute("INSTALL httpfs; LOAD httpfs;")
+    con.execute("INSTALL aws; LOAD aws;")
+    con.execute("CREATE OR REPLACE SECRET stockpilot_s3 (TYPE s3, PROVIDER credential_chain);")
+
+    df = con.execute(sql).fetchdf()
+    return df.to_dict(orient="records")
+
+
 # Node: execute_sql
 def execute_sql(state: AgentState) -> dict:
     """
-    Execute the generated SQL against PostgreSQL.
-    Returns rows as a list of dicts.
-    Limits execution to 20 rows max (safety cap).
+    Execute the generated SQL, routing across the 90-day retention boundary.
+
+    StockPilot keeps only the last RETENTION_DAYS (90) days of price rows in
+    Postgres — the s3_archive_pipeline Airflow DAG moves anything older to
+    S3 Parquet and deletes it from Postgres. So a query whose date range is:
+      - entirely within the last 90 days -> query Postgres only (unchanged).
+      - entirely older than 90 days      -> query the S3 archive via DuckDB.
+      - spanning both sides of the boundary -> query both and concatenate
+        the rows into one result set before handing off to generation.
+
+    The date range is read off the literal date bounds in the LLM-generated
+    SQL (see _extract_date_bounds). Queries with no literal date bounds
+    (relative filters like "last 7 days") can never cross the boundary by
+    construction and always take the Postgres-only path.
+
+    Limits execution to 20 rows max (safety cap), same as before.
     """
     sql = state.get("sql_query")
+    ticker = state.get("ticker")
 
     if not sql:
         return {
@@ -156,21 +230,39 @@ def execute_sql(state: AgentState) -> dict:
             "messages":    ["[execute_sql] No SQL to execute"],
         }
 
+    cutoff = (datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)).date()
+    min_date, max_date = _extract_date_bounds(sql)
+
+    touches_older_data = min_date is not None and min_date < cutoff
+    touches_recent_data = min_date is None or max_date >= cutoff
+
+    sql_results: list[dict[str, Any]] = []
+    sources: list[str] = []
+
     try:
-        engine = _get_engine()
-        with engine.connect() as conn:
-            result = conn.execute(text(sql))
-            columns = list(result.keys())
-            rows    = result.fetchmany(20)   # hard cap at 20 rows
 
-            sql_results: list[dict[str, Any]] = [
-                dict(zip(columns, row)) for row in rows
-            ]
+        if touches_recent_data:
+            engine = _get_engine()
+            with engine.connect() as conn:
+                result  = conn.execute(text(sql))
+                columns = list(result.keys())
+                rows    = result.fetchmany(20)   # hard cap at 20 rows
+                sql_results.extend(dict(zip(columns, row)) for row in rows)
+            sources.append("postgres")
 
-        logger.info(f"[stock_data_rag] SQL returned {len(sql_results)} rows")
+        if touches_older_data:
+            duckdb_sql = _build_duckdb_sql(sql, ticker)
+            archive_rows = _query_duckdb_s3(duckdb_sql)
+            sql_results.extend(archive_rows[: 20 - len(sql_results)])
+            sources.append("s3_archive")
+
+        logger.info(
+            f"[stock_data_rag] SQL returned {len(sql_results)} rows "
+            f"(sources={sources}, cutoff={cutoff})"
+        )
         return {
             "sql_results": sql_results,
-            "messages":    [f"[execute_sql] {len(sql_results)} rows returned"],
+            "messages":    [f"[execute_sql] {len(sql_results)} rows returned from {sources}"],
         }
 
     except SQLAlchemyError as exc:
@@ -179,6 +271,13 @@ def execute_sql(state: AgentState) -> dict:
             "sql_results": [],
             "messages": [f"[execute_sql] DB error: {exc}"],
             "error":str(exc),
+        }
+    except Exception as exc:
+        logger.error(f"[stock_data_rag] S3 archive query error: {exc}")
+        return {
+            "sql_results": sql_results,
+            "messages": [f"[execute_sql] S3 archive error: {exc}"],
+            "error": str(exc),
         }
 
 # Node: generate_stock_answer
