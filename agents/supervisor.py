@@ -80,16 +80,34 @@ def classify_query(state: AgentState) -> dict:
     system = """You are a query classifier for a stock market AI assistant.
 Classify the user's question into exactly one of these categories:
 
-1. news_rag       - Questions about news, recent events, sentiment, analyst opinions,
-                    earnings announcements, company developments, market reactions
+Disambiguation rule (apply this first): If the question asks for a specific
+number (a price, a volume, a percentage change on an exact date) for one of
+the tracked tickers -> stock_data_rag. If the question asks "how did X do /
+perform" or "what happened" as an open-ended narrative question, or
+references an index/company not in the tracked ticker list -> news_rag.
+Words like "performance," "stock," or a company/index name do NOT by
+themselves mean stock_data_rag -- if the person wants the story behind a
+move rather than a specific number, it's news_rag.
+
+1. news_rag       - Questions wanting a narrative explanation of events,
+                    sentiment, analyst opinions, earnings announcements,
+                    company developments, market reactions, or the drivers
+                    behind a stock's performance -- not a specific number.
                     Examples: "What's the latest news on Apple?",
                               "What did analysts say about Tesla earnings?",
-                              "Any recent developments for NVDA?"
+                              "Any recent developments for NVDA?",
+                              "How did Amazon stock perform" - wants a
+                              narrative summary of performance, not a raw
+                              number,
+                              "What happened to Nasdaq on June 5" - "what
+                              happened" signals a narrative/event question,
+                              and Nasdaq isn't a tracked ticker
 
-2. stock_data_rag - Questions about stock prices, price history, trading volume,
-                    performance metrics, price comparisons, highs/lows
+2. stock_data_rag - Questions wanting a specific numeric value pulled from
+                    stored OHLCV data (exact prices, volumes, highs/lows,
+                    numeric comparisons) for one of the 7 tracked tickers.
                     Examples: "What was AAPL's closing price last week?",
-                              "Compare MSFT and GOOGL performance this month",
+                              "Compare MSFT and GOOGL closing prices this month",
                               "What's the highest TSLA has traded recently?"
 
 3. general        - General market questions not requiring specific data retrieval,
@@ -118,6 +136,12 @@ Respond with ONLY one word: news_rag, stock_data_rag, or general"""
             route = "stock_data_rag"
         else:
             route = "general"
+
+        if route == "stock_data_rag" and ticker is None:
+            logger.info(
+                "Overriding stock_data_rag -> news_rag: no tracked ticker found in query."
+            )
+            route = "news_rag"
 
         logger.info(
             f"[supervisor] Query='{query[:60]}' -> ticker={ticker} route={route}"
