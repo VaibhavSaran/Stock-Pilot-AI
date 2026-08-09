@@ -25,6 +25,7 @@ COPY agents/     ./agents/
 COPY api/        ./api/
 COPY config/     ./config/
 COPY scraper/    ./scraper/
+COPY eval/       ./eval/
 
 # Patch pydantic-settings before chromadb loads (same fix as conftest.py)
 ENV PYTHONPATH=/app
