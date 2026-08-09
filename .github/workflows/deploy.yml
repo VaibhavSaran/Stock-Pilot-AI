@@ -1,9 +1,7 @@
 name: Deploy to AWS EC2
-
 on:
   push:
     branches: [ main ]
-
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -17,5 +15,23 @@ jobs:
           script: |
             cd ~/Stock-Pilot-AI
             git pull origin main
+
+            # Preserve current images as rollback point before building new ones
+            for img in stock-pilot-ai-api stock-pilot-ai-frontend; do
+              docker rmi ${img}:previous 2>/dev/null || true
+              docker tag ${img}:latest ${img}:previous 2>/dev/null || true
+            done
+
             docker compose up -d --build --force-recreate api frontend
+
+            # Confirm new containers are actually healthy before pruning anything
+            sleep 15
+            if docker inspect --format='{{.State.Health.Status}}' stockpilot_api | grep -q healthy && \
+               docker inspect --format='{{.State.Health.Status}}' stockpilot_frontend | grep -q healthy; then
+              echo "New containers healthy — pruning old dangling images"
+              docker image prune -f
+            else
+              echo "WARNING: new containers not healthy after 15s — skipping prune, :previous tags preserved for rollback"
+            fi
+
             echo "Deployment completed"
